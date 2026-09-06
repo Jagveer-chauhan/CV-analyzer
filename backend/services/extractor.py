@@ -9,98 +9,74 @@ try:
 except ImportError:
     from backend.config import settings
 
-SYSTEM_PROMPT = """You are an expert HR Data Extractor. Extract relevant candidate CV data from the provided text into valid JSON matching this structure:
+_EXTRACTION_BASE_PROMPT = """\
+You are a high-speed, precision HR Data Extraction Parser.
+Extract candidate CV facts into the following exact JSON structure. Return ONLY valid JSON:
+
 {
   "candidate": {
-    "full_name": "Candidate Full Name or null",
-    "email": "email@example.com or null",
-    "phone": "+123456789 or null",
-    "location": "City, Country or null",
-    "links": []
+    "full_name": "string or null",
+    "email": "string or null",
+    "phone": "string or null",
+    "location": "string or null",
+    "links": ["url1", "url2"]
   },
-  "summary": "Summary text or null",
+  "summary": "string or null",
   "experience": [
     {
-      "company": "Company Name",
-      "role": "Job Title",
-      "start_date": "YYYY or Month YYYY",
-      "end_date": "YYYY or Present",
-      "is_current": false,
-      "description": "Role overview",
-      "responsibilities": ["Task 1"],
-      "skills_used": ["Skill 1"]
+      "company": "string",
+      "role": "string",
+      "start_date": "string (e.g. 'Jan 2020')",
+      "end_date": "string (e.g. 'Present' or 'Dec 2022')",
+      "is_current": true/false,
+      "description": "string",
+      "responsibilities": ["string"],
+      "skills_used": ["string"]
     }
   ],
   "projects": [
     {
-      "name": "Project Name",
-      "role": "Role / Contributor",
-      "description": "Project overview",
-      "technologies": ["Tech 1", "Tech 2"],
-      "link": "URL or null"
+      "name": "string",
+      "role": "string",
+      "description": "string",
+      "technologies": ["string"],
+      "link": "string or null"
     }
   ],
   "education": [
     {
-      "institution": "University Name",
-      "degree": "Degree Title",
-      "field_of_study": "Field",
-      "start_date": "YYYY",
-      "end_date": "YYYY",
-      "gpa": "GPA or null"
+      "institution": "string",
+      "degree": "string",
+      "field_of_study": "string",
+      "start_date": "YYYY or null",
+      "end_date": "YYYY or Present or null",
+      "gpa": "string or null"
     }
   ],
-  "skills": ["Skill 1", "Skill 2"],
+  "skills": ["string"],
   "certifications": [
     {
-      "name": "Cert Name",
-      "issuer": "Issuer",
-      "date_obtained": "YYYY"
+      "name": "string",
+      "issuer": "string or null",
+      "date_obtained": "YYYY or null"
     }
-  ],
-  "derived": {
-    "years_of_experience": 0.0,
-    "skills_count": 0,
-    "seniority_level": "Senior / Mid / Junior",
-    "top_skills": [],
-    "management_experience": false
-  },
-  "inferred": {
-    "inferred_skills": [],
-    "leadership_traits": [],
-    "communication_style": "Style description",
-    "domain_expertise": []
-  },
-  "sections": [
-    {
-      "heading": "Section Heading",
-      "content": "Content text"
-    }
-  ],
-  "confidence_scores": {
-    "overall": 0.90,
-    "experience_dates": 0.85,
-    "inferred_skills": 0.80
-  }
+  ]
 }
 
-RULES:
-- Return ONLY valid JSON.
-- CRITICAL - EXTRACT ALL WORK EXPERIENCES: You MUST extract EVERY SINGLE work experience item present across ALL pages of the resume. Do NOT omit, truncate, or summarize previous or older jobs. If there are 2, 3, 4, 5+ positions listed across pages, extract every distinct job into the "experience" array.
-- CRITICAL - EXTRACT PROJECTS: If the candidate lists projects (client projects, personal projects, freelance work, portfolio), extract each one into the "projects" array with name, role, technologies, and description.
-- Extract candidate name, email, phone, location, education, skills, and dynamic sections accurately.
-- Keep descriptions and responsibilities concise (1-2 sentences per item) to maintain high data density.
+CRITICAL RULES:
+- Output ONLY the JSON object. Do not include markdown code fences, commentary, or explanations.
+- Extract ALL positions from work experience across all pages without omitting older roles.
+- Set is_current = true if the role ends with 'Present', 'Current', or 'Now'.
+- Keep responsibilities concise (one brief bullet per item).
+- Preserve exact date strings as written in the resume.
 """
 
+
 def get_extraction_system_prompt() -> str:
-    """Generates extraction system prompt enriched with current dynamic date/time context."""
-    today_str = datetime.now().strftime("%A, %B %d, %Y")
-    return (
-        f"{SYSTEM_PROMPT}\n"
-        f"- TEMPORAL CONTEXT: Today's reference date is {today_str}. All temporal evaluations "
-        f"(including calculating 'derived.years_of_experience', tenures for roles marked 'Present' or 'Current', "
-        f"and education/project recency) must be calculated relative to today's date ({today_str}).\n"
-    )
+    """Generates a streamlined extraction system prompt for fast, high-density inference."""
+    return _EXTRACTION_BASE_PROMPT
+
+
 
 
 # Reusable singleton async client instance for HTTP/2 & connection keep-alive reuse
@@ -129,7 +105,7 @@ async def extract_chunk_json_async(chunk_text: str) -> dict:
     try:
         response = await client.chat.completions.create(
             messages=messages,
-            max_tokens=4000,
+            max_tokens=1500,
             temperature=0.1,
         )
         if response.choices and len(response.choices) > 0:
@@ -188,7 +164,7 @@ def _extract_chunk_sync(chunk_text: str) -> dict:
                     {"role": "system", "content": get_extraction_system_prompt()},
                     {"role": "user", "content": f"Extract Candidate CV Data:\n{chunk_text}"},
                 ],
-                max_tokens=4000,
+                max_tokens=1500,
                 temperature=0.1,
             )
             if response.choices and len(response.choices) > 0:

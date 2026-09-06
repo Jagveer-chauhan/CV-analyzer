@@ -78,6 +78,7 @@ def get_root_info():
             "list_all_candidates": "GET /api/v1/cvs",
             "get_candidate_by_id": "GET /api/v1/cvs/{cv_id}",
             "delete_candidate": "DELETE /api/v1/cvs/{cv_id}",
+            "bulk_delete_candidates": "POST /api/v1/cvs/bulk-delete",
             "ai_chat_query": "POST /api/v1/cvs/chat",
         },
         "features": [

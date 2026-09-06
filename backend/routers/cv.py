@@ -18,6 +18,8 @@ from models.schemas import (
     TimingMs,
     ChatRequest,
     ChatResponse,
+    BulkDeleteRequest,
+    BulkDeleteResponse,
 )
 from services.parser import extract_text_from_bytes, chunk_text
 from services.extractor import extract_all_chunks_async
@@ -184,6 +186,29 @@ def get_single_cv(cv_id: str, db: Session = Depends(get_db)):
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "raw_text": doc.raw_text,
         "data": doc.structured_data,
+    }
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResponse)
+def bulk_delete_cvs(request: BulkDeleteRequest, db: Session = Depends(get_db)):
+    """Deletes multiple CV documents by their IDs in a single database transaction."""
+    if not request.cv_ids:
+        raise HTTPException(status_code=400, detail="No CV IDs provided for deletion")
+
+    docs = db.query(CVDocument).filter(CVDocument.id.in_(request.cv_ids)).all()
+    deleted_ids = [doc.id for doc in docs]
+
+    if not deleted_ids:
+        raise HTTPException(status_code=404, detail="No matching CV documents found to delete")
+
+    for doc in docs:
+        db.delete(doc)
+    db.commit()
+
+    return {
+        "message": f"Successfully deleted {len(deleted_ids)} CV document(s)",
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
     }
 
 

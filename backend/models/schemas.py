@@ -160,3 +160,17 @@ class ChatResponse(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+
+class BulkDeleteRequest(BaseModel):
+    cv_ids: List[str] = Field(..., min_length=1, description="List of CV IDs to delete")
+
+    model_config = ConfigDict(extra="allow")
+
+
+class BulkDeleteResponse(BaseModel):
+    message: str
+    deleted_count: int
+    deleted_ids: List[str]
+
+    model_config = ConfigDict(extra="allow")
+

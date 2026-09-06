@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ConfirmationModal from './components/ConfirmationModal';
+import ToastAlert from './components/ToastAlert';
 
 // ============================================================================
 // Markdown Parsing Helpers (Fixes raw **bold**, lists, and formatting)
@@ -105,9 +107,27 @@ function App() {
   const [activeTab, setActiveTab] = useState('formatted'); // 'formatted', 'json', 'metadata'
   const [copiedJson, setCopiedJson] = useState(false);
 
+  // CV Bulk Selection State (List of selected cv_ids)
+  const [selectedCvIds, setSelectedCvIds] = useState([]);
+
+  // Confirmation Modal State (replaces native browser alert & confirm)
+  const [deleteDialog, setDeleteDialog] = useState({
+    isOpen: false,
+    type: null, // 'single' | 'bulk'
+    targetId: null,
+    targetName: '',
+    targetFilename: '',
+    count: 0,
+    isLoading: false,
+  });
+
+  // Floating Toast Alert State
+  const [toast, setToast] = useState(null);
+
   // Upload State
   const [files, setFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadStage, setUploadStage] = useState('');
   const [uploadError, setUploadError] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -141,6 +161,11 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         setCvList(data);
+
+        // Remove any stale selected IDs that no longer exist in the database
+        const validIds = new Set(data.map((c) => c.id));
+        setSelectedCvIds((prev) => prev.filter((id) => validIds.has(id)));
+
         if (selectLatestId) {
           setSelectedCvId(selectLatestId);
         } else if (data.length > 0 && selectedCvId === 'all') {
@@ -172,7 +197,15 @@ function App() {
     if (files.length === 0) return;
 
     setIsUploading(true);
+    setUploadStage('Reading & extracting document text...');
     setUploadError(null);
+
+    const stageTimer1 = setTimeout(() => {
+      setUploadStage('Analyzing candidate experience with AI...');
+    }, 2000);
+    const stageTimer2 = setTimeout(() => {
+      setUploadStage('Structuring skills & finalizing candidate profile...');
+    }, 6000);
 
     const formData = new FormData();
     files.forEach((file) => formData.append('files', file));
@@ -184,12 +217,13 @@ function App() {
       });
 
       if (!res.ok) {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         throw new Error(errData.detail || 'Failed to process document');
       }
 
       const resultData = await res.json();
       const firstDoc = Array.isArray(resultData) ? resultData[0] : resultData;
+      const timingSec = ((firstDoc?.data?.processing_metadata?.timing_ms?.total_processing || 0) / 1000).toFixed(1);
 
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -202,29 +236,164 @@ function App() {
         ...prev,
         {
           role: 'assistant',
-          content: `Uploaded and extracted **${firstDoc?.filename}** successfully! You can now ask questions about this candidate or search across all CVs in your library.`,
+          content: `Uploaded and extracted **${firstDoc?.filename}** successfully in **${timingSec}s**! You can now ask questions about this candidate or search across all CVs in your library.`,
           time: currentTime,
           latency_ms: firstDoc?.data?.processing_metadata?.timing_ms?.total_processing || 0,
         },
       ]);
+
+      setToast({
+        type: 'success',
+        title: 'CV Extracted Successfully',
+        message: `Processed "${firstDoc?.filename}" in ${timingSec}s.`,
+      });
     } catch (err) {
       setUploadError(err.message);
+      setToast({
+        type: 'error',
+        title: 'Upload Failed',
+        message: err.message || 'An error occurred during CV processing.',
+      });
     } finally {
+      clearTimeout(stageTimer1);
+      clearTimeout(stageTimer2);
+      setUploadStage('');
       setIsUploading(false);
     }
   };
 
-  const handleDeleteCv = async (e, id) => {
+  // Bulk Selection Handlers
+  const handleToggleSelectCv = (id) => {
+    setSelectedCvIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedCvIds.length === cvList.length) {
+      setSelectedCvIds([]);
+    } else {
+      setSelectedCvIds(cvList.map((cv) => cv.id));
+    }
+  };
+
+  const handleClearSelection = () => {
+    setSelectedCvIds([]);
+  };
+
+  // Delete Prompt Handlers (Opens modern accessible modal)
+  const handlePromptSingleDelete = (e, doc) => {
     e.stopPropagation();
-    if (!window.confirm('Delete this candidate CV from the database?')) return;
+    setDeleteDialog({
+      isOpen: true,
+      type: 'single',
+      targetId: doc.id,
+      targetName: doc.candidate_name || doc.filename,
+      targetFilename: doc.filename,
+      count: 1,
+      isLoading: false,
+    });
+  };
+
+  const handlePromptBulkDelete = () => {
+    if (selectedCvIds.length === 0) return;
+    setDeleteDialog({
+      isOpen: true,
+      type: 'bulk',
+      targetId: null,
+      targetName: '',
+      targetFilename: '',
+      count: selectedCvIds.length,
+      isLoading: false,
+    });
+  };
+
+  const handleCloseDeleteDialog = () => {
+    if (deleteDialog.isLoading) return; // Prevent dismiss while request is pending
+    setDeleteDialog({
+      isOpen: false,
+      type: null,
+      targetId: null,
+      targetName: '',
+      targetFilename: '',
+      count: 0,
+      isLoading: false,
+    });
+  };
+
+  // Perform Deletion (Single or Bulk) with loading states and toast alerts
+  const handleConfirmDelete = async () => {
+    const { type, targetId, count, targetName, targetFilename } = deleteDialog;
+    setDeleteDialog((prev) => ({ ...prev, isLoading: true }));
+
     try {
-      const res = await fetch(`${API_BASE}/api/v1/cvs/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        if (selectedCvId === id) setSelectedCvId('all');
-        await loadCvList();
+      if (type === 'single') {
+        const res = await fetch(`${API_BASE}/api/v1/cvs/${targetId}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to delete candidate resume');
+        }
+
+        // If the currently inspected CV was deleted, revert active view to 'all'
+        if (selectedCvId === targetId) {
+          setSelectedCvId('all');
+        }
+
+        // Clean up from selected list if checked
+        setSelectedCvIds((prev) => prev.filter((id) => id !== targetId));
+
+        setToast({
+          type: 'success',
+          title: 'Resume Deleted',
+          message: `"${targetName || targetFilename}" removed successfully.`,
+        });
+      } else if (type === 'bulk') {
+        const idsToDelete = [...selectedCvIds];
+        const res = await fetch(`${API_BASE}/api/v1/cvs/bulk-delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cv_ids: idsToDelete }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to bulk delete selected resumes');
+        }
+
+        // If currently inspected CV was among deleted ones, revert active view to 'all'
+        if (idsToDelete.includes(selectedCvId)) {
+          setSelectedCvId('all');
+        }
+
+        // Clear bulk selections
+        setSelectedCvIds([]);
+
+        setToast({
+          type: 'success',
+          title: 'Bulk Deletion Complete',
+          message: `Successfully deleted ${count} candidate resume${count > 1 ? 's' : ''}.`,
+        });
       }
+
+      // Close modal and refresh list from server
+      setDeleteDialog({
+        isOpen: false,
+        type: null,
+        targetId: null,
+        targetName: '',
+        targetFilename: '',
+        count: 0,
+        isLoading: false,
+      });
+      await loadCvList();
     } catch (err) {
       console.error('Delete error:', err);
+      setDeleteDialog((prev) => ({ ...prev, isLoading: false }));
+      setToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: err.message || 'An error occurred while deleting candidate.',
+      });
     }
   };
 
@@ -511,7 +680,7 @@ function App() {
                   {isUploading ? (
                     <>
                       <span className="btn-spinner"></span>
-                      <span>Processing with Gemma 3 ({files.length})...</span>
+                      <span>{uploadStage || `Processing (${files.length})...`}</span>
                     </>
                   ) : (
                     <>
@@ -554,12 +723,63 @@ function App() {
             {/* Individual Resumes List */}
             <div className="resumes-header-row">
               <span className="resumes-header-title">Candidate Resumes ({cvList.length})</span>
-              <span className="resumes-header-hint">Select a resume to chat</span>
+              {cvList.length > 0 && (
+                <div className="resumes-header-actions">
+                  <button
+                    type="button"
+                    className="select-all-btn"
+                    onClick={handleToggleSelectAll}
+                    title={selectedCvIds.length === cvList.length ? 'Deselect all resumes' : 'Select all resumes for bulk actions'}
+                  >
+                    {selectedCvIds.length === cvList.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                </div>
+              )}
             </div>
+
+            {/* Bulk Actions Toolbar (Visible when 1+ resumes are selected) */}
+            {selectedCvIds.length > 0 && (
+              <div className="bulk-action-bar" role="toolbar" aria-label="Bulk actions toolbar">
+                <div className="bulk-action-left">
+                  <span className="bulk-selected-badge">{selectedCvIds.length} Selected</span>
+                  <button
+                    type="button"
+                    className="bulk-clear-btn"
+                    onClick={handleClearSelection}
+                    title="Clear selection"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="bulk-delete-btn"
+                  onClick={handlePromptBulkDelete}
+                  title={`Delete ${selectedCvIds.length} selected resume${selectedCvIds.length > 1 ? 's' : ''}`}
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 6h18" />
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                  </svg>
+                  <span>Delete ({selectedCvIds.length})</span>
+                </button>
+              </div>
+            )}
 
             <div className="resumes-cards-list">
               {cvList.map((doc) => {
                 const isActive = selectedCvId === doc.id;
+                const isBulkSelected = selectedCvIds.includes(doc.id);
                 const fileType = getFileType(doc.filename);
                 const candName = doc.candidate_name || doc.filename;
                 const exp = doc.years_of_experience;
@@ -569,10 +789,23 @@ function App() {
                 return (
                   <div
                     key={doc.id}
-                    className={`resume-select-card ${isActive ? 'active' : ''}`}
+                    className={`resume-select-card ${isActive ? 'active' : ''} ${isBulkSelected ? 'has-bulk-selected' : ''}`}
                     onClick={() => setSelectedCvId(doc.id)}
                   >
                     <div className="resume-card-left">
+                      <label
+                        className="cv-checkbox-container"
+                        onClick={(e) => e.stopPropagation()}
+                        title={isBulkSelected ? 'Deselect candidate' : 'Select for bulk delete'}
+                      >
+                        <input
+                          type="checkbox"
+                          className="cv-checkbox-input"
+                          checked={isBulkSelected}
+                          onChange={() => handleToggleSelectCv(doc.id)}
+                          aria-label={`Select ${candName}`}
+                        />
+                      </label>
                       <div className={`filetype-badge ${fileType}`}>
                         {fileType.toUpperCase()}
                       </div>
@@ -592,11 +825,26 @@ function App() {
                     <div className="resume-card-right">
                       {isActive && <span className="active-selected-tag">Selected</span>}
                       <button
+                        type="button"
                         className="item-delete-btn"
-                        title="Delete resume"
-                        onClick={(e) => handleDeleteCv(e, doc.id)}
+                        title={`Delete ${candName}`}
+                        onClick={(e) => handlePromptSingleDelete(e, doc)}
+                        aria-label={`Delete ${candName}`}
                       >
-                        ✕
+                        <svg
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M3 6h18" />
+                          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                        </svg>
                       </button>
                     </div>
                   </div>
@@ -1405,6 +1653,48 @@ function App() {
           </div>
         </section>
       </main>
+
+      {/* Modern Confirmation Modal Popup (Replaces default browser alert/confirm) */}
+      <ConfirmationModal
+        isOpen={deleteDialog.isOpen}
+        title={deleteDialog.type === 'bulk' ? `Delete ${deleteDialog.count} Resumes?` : 'Delete Candidate Resume?'}
+        message={
+          deleteDialog.type === 'bulk' ? (
+            <p className="modal-message-text">
+              Are you sure you want to permanently delete{' '}
+              <span className="modal-target-highlight">{deleteDialog.count} selected candidates</span>{' '}
+              from the database? All extracted data, experience history, and skills will be permanently removed.
+            </p>
+          ) : (
+            <p className="modal-message-text">
+              Are you sure you want to permanently delete{' '}
+              <span className="modal-target-highlight">{deleteDialog.targetName}</span>
+              {deleteDialog.targetFilename && deleteDialog.targetFilename !== deleteDialog.targetName ? (
+                <span> ({deleteDialog.targetFilename})</span>
+              ) : null}{' '}
+              from the database? All extracted data, experience history, and skills will be permanently removed.
+            </p>
+          )
+        }
+        confirmText={
+          deleteDialog.type === 'bulk'
+            ? `Delete (${deleteDialog.count})`
+            : 'Delete Resume'
+        }
+        cancelText="Cancel"
+        isLoading={deleteDialog.isLoading}
+        loadingText={
+          deleteDialog.type === 'bulk'
+            ? `Deleting ${deleteDialog.count} CVs...`
+            : 'Deleting...'
+        }
+        variant="danger"
+        onConfirm={handleConfirmDelete}
+        onClose={handleCloseDeleteDialog}
+      />
+
+      {/* Floating Toast Notification Alerts */}
+      <ToastAlert toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }
