@@ -1,6 +1,7 @@
 import json
 import re
 import asyncio
+from datetime import datetime
 from huggingface_hub import AsyncInferenceClient, InferenceClient
 
 try:
@@ -91,6 +92,17 @@ RULES:
 - Keep descriptions and responsibilities concise (1-2 sentences per item) to maintain high data density.
 """
 
+def get_extraction_system_prompt() -> str:
+    """Generates extraction system prompt enriched with current dynamic date/time context."""
+    today_str = datetime.now().strftime("%A, %B %d, %Y")
+    return (
+        f"{SYSTEM_PROMPT}\n"
+        f"- TEMPORAL CONTEXT: Today's reference date is {today_str}. All temporal evaluations "
+        f"(including calculating 'derived.years_of_experience', tenures for roles marked 'Present' or 'Current', "
+        f"and education/project recency) must be calculated relative to today's date ({today_str}).\n"
+    )
+
+
 # Reusable singleton async client instance for HTTP/2 & connection keep-alive reuse
 _async_client: AsyncInferenceClient | None = None
 
@@ -109,7 +121,7 @@ def get_async_client() -> AsyncInferenceClient:
 async def extract_chunk_json_async(chunk_text: str) -> dict:
     """Queries HuggingFace Serverless Inference API asynchronously using connection pooling."""
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": get_extraction_system_prompt()},
         {"role": "user", "content": f"Extract Candidate CV Data:\n{chunk_text}"},
     ]
 
@@ -173,7 +185,7 @@ def _extract_chunk_sync(chunk_text: str) -> dict:
             )
             response = sync_client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": get_extraction_system_prompt()},
                     {"role": "user", "content": f"Extract Candidate CV Data:\n{chunk_text}"},
                 ],
                 max_tokens=4000,

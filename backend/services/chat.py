@@ -6,6 +6,7 @@ Handles conversational interactions with Gemma 3 LLM:
 - All-CVs Mode: Answers cross-candidate queries, comparisons, and talent searches.
 """
 
+from datetime import datetime
 import time
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -97,14 +98,15 @@ async def _chat_with_single_cv(
 
     context_str = "\n".join(context_lines)
 
+    current_date_str = datetime.now().strftime("%A, %B %d, %Y")
     system_prompt = (
-        "You are an expert HR and Talent Acquisition Assistant. "
-        "Your task is to answer questions about the specific candidate CV provided in the context below. "
+        f"You are an expert HR and Talent Acquisition Assistant. Today's current date is {current_date_str}.\n"
         "Guidelines:\n"
-        "1. Ground your answers strictly on the candidate's CV details.\n"
-        "2. Be concise, professional, and clear.\n"
-        "3. Use bullet points or short paragraphs for readability.\n"
-        "4. If something is not in the CV, state clearly that it is not mentioned.\n\n"
+        f"1. Temporal Context: Today's actual date is {current_date_str}. All temporal queries, candidate tenure calculations, years of experience, current age/status, recency of projects/education, and positions marked 'Present' or 'Current' must be evaluated accurately relative to today's date ({current_date_str}).\n"
+        "2. Ground your answers strictly on the candidate's CV details.\n"
+        "3. Be concise, professional, and clear.\n"
+        "4. Use bullet points or short paragraphs for readability.\n"
+        "5. If something is not in the CV, state clearly that it is not mentioned.\n\n"
         f"--- CANDIDATE CONTEXT ---\n{context_str}\n-------------------------"
     )
 
@@ -179,14 +181,15 @@ async def _chat_with_all_cvs(
 
     all_candidates_context = "\n\n".join(candidate_summaries)
 
+    current_date_str = datetime.now().strftime("%A, %B %d, %Y")
     system_prompt = (
-        "You are an expert HR and Talent Acquisition Assistant with access to all candidates in the database. "
-        "Answer comparative questions, talent searches, skill lookups, or profile comparisons based on the candidates below.\n"
+        f"You are an expert HR and Talent Acquisition Assistant with access to all candidates in the database. Today's current date is {current_date_str}.\n"
         "Guidelines:\n"
-        "1. Identify candidates clearly by name and filename.\n"
-        "2. Compare skills, experience, and suitability objectively.\n"
-        "3. Format answers cleanly using markdown bullet points or bold text.\n"
-        "4. If no candidate matches a requested skill/role, say so explicitly.\n\n"
+        f"1. Temporal Context: Today's actual date is {current_date_str}. All time-based evaluations, candidate comparisons, tenure calculations, recent roles, and 'Present' positions must be evaluated accurately relative to today's date ({current_date_str}).\n"
+        "2. Identify candidates clearly by name and filename.\n"
+        "3. Compare skills, experience, and suitability objectively.\n"
+        "4. Format answers cleanly using markdown bullet points or bold text.\n"
+        "5. If no candidate matches a requested skill/role, say so explicitly.\n\n"
         f"--- CANDIDATES IN DATABASE ({len(docs)}) ---\n{all_candidates_context}\n-------------------------"
     )
 

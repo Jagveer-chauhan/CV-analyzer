@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Any, Dict, List
 
 
@@ -240,6 +241,7 @@ def _calculate_years_of_experience(exp_list: List[Dict[str, Any]]) -> float:
     """Calculates approximate total years of experience from experience date ranges."""
     total_months = 0
     year_pattern = re.compile(r"\b(19\d{2}|20\d{2})\b")
+    current_year = datetime.now().year
 
     for exp in exp_list:
         start_str = str(exp.get("start_date") or "")
@@ -250,7 +252,7 @@ def _calculate_years_of_experience(exp_list: List[Dict[str, Any]]) -> float:
 
         if start_years:
             s_year = int(start_years[0])
-            e_year = int(end_years[0]) if end_years else 2026
+            e_year = int(end_years[0]) if end_years else current_year
             diff = max(0, e_year - s_year)
             total_months += diff * 12
 
