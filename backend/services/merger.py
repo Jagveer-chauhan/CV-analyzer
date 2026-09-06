@@ -237,23 +237,154 @@ def _merge_section_item(sec_list: List[Dict[str, Any]], new_sec: Dict[str, Any])
     sec_list.append(new_sec)
 
 
-def _calculate_years_of_experience(exp_list: List[Dict[str, Any]]) -> float:
-    """Calculates approximate total years of experience from experience date ranges."""
+
+# Month name → number lookup
+_MONTH_MAP = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def _parse_date_to_year_month(date_str: str) -> tuple[int, int] | None:
+    """
+    Parses a date string into (year, month) with best-effort month extraction.
+    Handles: 'January 2020', 'Jan 2020', '2020-01', '01/2020', bare '2020'.
+    Returns None if no year can be found.
+    """
+    if not date_str:
+        return None
+
+    text = date_str.strip().lower()
+
+    # ISO format: 2020-01 or 2020-01-15
+    iso_match = re.search(r"(\d{4})-(\d{1,2})", text)
+    if iso_match:
+        return int(iso_match.group(1)), int(iso_match.group(2))
+
+    # Slash format: 01/2020 or 2020/01
+    slash_match = re.search(r"(\d{1,2})/(\d{4})", text)
+    if slash_match:
+        return int(slash_match.group(2)), int(slash_match.group(1))
+    slash_match2 = re.search(r"(\d{4})/(\d{1,2})", text)
+    if slash_match2:
+        return int(slash_match2.group(1)), int(slash_match2.group(2))
+
+    # Named month: "January 2020", "Jan 2020", "2020 January"
+    for name, num in _MONTH_MAP.items():
+        if name in text:
+            year_match = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+            if year_match:
+                return int(year_match.group(1)), num
+
+    # Bare year only: "2020"
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+    if year_match:
+        return int(year_match.group(1)), None  # month unknown
+
+    return None
+
+
+def _is_present(date_str: str) -> bool:
+    """Returns True if the date string means 'ongoing / current'."""
+    if not date_str:
+        return False
+    lowered = date_str.strip().lower()
+    return lowered in {"present", "current", "now", "ongoing", "till date", "to date", "-", ""}
+
+
+def calculate_experience_breakdown(exp_list: List[Dict[str, Any]]) -> dict:
+    """
+    Calculates accurate experience breakdown per role and total, with month precision.
+    Returns a dict with:
+      - total_years: float (rounded to 1 dp)
+      - per_role: list of {company, role, start, end, months, years_str}
+      - reference_date: str  (the date used as 'today')
+    """
+    now = datetime.now()
+    current_year = now.year
+    current_month = now.month
+    today_label = now.strftime("%B %Y")
+
     total_months = 0
-    year_pattern = re.compile(r"\b(19\d{2}|20\d{2})\b")
-    current_year = datetime.now().year
+    per_role = []
 
     for exp in exp_list:
+        company = exp.get("company", "Unknown")
+        role = exp.get("role", "Unknown")
         start_str = str(exp.get("start_date") or "")
         end_str = str(exp.get("end_date") or "")
+        is_current = exp.get("is_current", False) or _is_present(end_str)
 
-        start_years = year_pattern.findall(start_str)
-        end_years = year_pattern.findall(end_str)
+        start_parsed = _parse_date_to_year_month(start_str)
+        if not start_parsed:
+            continue  # Can't calculate without a start year
 
-        if start_years:
-            s_year = int(start_years[0])
-            e_year = int(end_years[0]) if end_years else current_year
-            diff = max(0, e_year - s_year)
-            total_months += diff * 12
+        s_year, s_month = start_parsed
+        s_month = s_month or 1  # Default to January if month unknown for start
 
-    return round(total_months / 12.0, 1)
+        if is_current:
+            e_year, e_month = current_year, current_month
+            end_label = f"Present ({today_label})"
+        else:
+            end_parsed = _parse_date_to_year_month(end_str)
+            if end_parsed:
+                e_year, e_month = end_parsed
+                e_month = e_month or 12  # Default to December for past year-only ends
+                end_label = end_str
+            else:
+                # No end date and not marked current — skip to avoid inflating
+                continue
+
+        duration_months = max(0, (e_year - s_year) * 12 + (e_month - s_month))
+        total_months += duration_months
+
+        y = duration_months // 12
+        m = duration_months % 12
+        if y > 0 and m > 0:
+            years_str = f"{y} yr {m} mo"
+        elif y > 0:
+            years_str = f"{y} yr"
+        else:
+            years_str = f"{m} mo"
+
+        per_role.append({
+            "company": company,
+            "role": role,
+            "start": start_str,
+            "end": end_label,
+            "months": duration_months,
+            "years_str": years_str,
+        })
+
+    total_y = total_months // 12
+    total_m = total_months % 12
+    total_years = round(total_months / 12.0, 1)
+    if total_y > 0 and total_m > 0:
+        total_label = f"{total_y} years {total_m} months"
+    elif total_y > 0:
+        total_label = f"{total_y} years"
+    else:
+        total_label = f"{total_m} months"
+
+    return {
+        "total_years": total_years,
+        "total_label": total_label,
+        "per_role": per_role,
+        "reference_date": today_label,
+    }
+
+
+def _calculate_years_of_experience(exp_list: List[Dict[str, Any]]) -> float:
+    """Calculates total years of experience with month-level precision. Used during CV merge."""
+    return calculate_experience_breakdown(exp_list)["total_years"]
+
