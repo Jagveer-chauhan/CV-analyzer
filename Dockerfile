@@ -20,7 +20,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application source code
 COPY backend/ ./backend/
-COPY .env.example .env.example
 
 EXPOSE 8000
 
